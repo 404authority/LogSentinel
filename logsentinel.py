@@ -1,93 +1,101 @@
-from collections import Counter
-from pathlib import Path
-import re
-
-from collections import Counter
-from pathlib import Path
-import re
-
-LOG_FILE = Path("logs/auth.log")
-FAILED_LOGIN_THRESHOLD = 3
-
-FAILED_LOGIN_PATTERN = re.compile(
-    r"Failed password for (?:invalid user )?\S+ from "
-    r"(?P<ip>\d{1,3}(?:\.\d{1,3}){3})"
-)
-
-
-def analyse_log(log_file: Path) -> Counter:
-    """Count failed SSH login attempts by source IP."""
-    failed_attempts = Counter()
-
-    with log_file.open("r", encoding="utf-8") as file:
-        for line in file:
-            match = FAILED_LOGIN_PATTERN.search(line)
-            if match:
-                failed_attempts[match.group("ip")] += 1
-
-    return failed_attempts
-
-
-def main() -> None:
-    if not LOG_FILE.exists():
-        print(f"Error: log file not found: {LOG_FILE}")
-        return
-
-    failed_attempts = analyse_log(LOG_FILE)
-
-    print("LogSentinel - SSH Authentication Log Analysis")
-    print("=" * 48)
-    print(f"Failed login events: {sum(failed_attempts.values())}")
-    print(f"Unique source IPs: {len(failed_attempts)}")
-    print()
-
-    alerts_found = False
-
-    for ip, count in failed_attempts.most_common():
-        if count >= FAILED_LOGIN_THRESHOLD:
-            alerts_found = True
-            print(
-                f"[ALERT] {ip}: {count} failed login attempts "
-                f"(threshold: {FAILED_LOGIN_THRESHOLD})"
-            )
-
-    if not alerts_found:
-        print("No source IP reached the alert threshold.")
-
-    print("\nAnalysis complete.")
-
-
-if __name__ == "__main__":
-    main()
-
-
-from collections import Counter
+from collections import Counter, defaultdict, deque
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import json
 import re
-from datetime import datetime, timezone
 
 LOG_FILE = Path("logs/auth.log")
 REPORT_FILE = Path("reports/analysis-report.json")
+
 FAILED_LOGIN_THRESHOLD = 3
+WINDOW_MINUTES = 10
 
 FAILED_LOGIN_PATTERN = re.compile(
+    r"(?P<timestamp>[A-Z][a-z]{2}\s+\d{1,2}\s"
+    r"\d{2}:\d{2}:\d{2}).*?"
     r"Failed password for (?:invalid user )?\S+ from "
     r"(?P<ip>\d{1,3}(?:\.\d{1,3}){3})"
 )
 
 
-def analyse_log(log_file: Path) -> Counter:
-    """Count failed SSH login attempts by source IP."""
+def parse_timestamp(value: str, year: int) -> datetime:
+    """Parse a typical SSH syslog timestamp."""
+    return datetime.strptime(
+        f"{year} {value}", "%Y %b %d %H:%M:%S"
+    ).replace(tzinfo=timezone.utc)
+
+
+def analyse_log(log_file: Path) -> dict:
+    """Analyse failed SSH logins and detect bursts within a time window."""
     failed_attempts = Counter()
+    events_by_ip = defaultdict(list)
+    current_year = datetime.now(timezone.utc).year
+    unparsed_failed_events = 0
 
     with log_file.open("r", encoding="utf-8") as file:
         for line in file:
-            match = FAILED_LOGIN_PATTERN.search(line)
-            if match:
-                failed_attempts[match.group("ip")] += 1
+            if "Failed password for " not in line:
+                continue
 
-    return failed_attempts
+            match = FAILED_LOGIN_PATTERN.search(line)
+            if not match:
+                unparsed_failed_events += 1
+                continue
+
+            ip = match.group("ip")
+
+            try:
+                timestamp = parse_timestamp(
+                    match.group("timestamp"), current_year
+                )
+            except ValueError:
+                unparsed_failed_events += 1
+                continue
+
+            failed_attempts[ip] += 1
+            events_by_ip[ip].append(timestamp)
+
+    window = timedelta(minutes=WINDOW_MINUTES)
+    alerts = []
+
+    for ip, timestamps in events_by_ip.items():
+        timestamps.sort()
+        recent_events = deque()
+        peak_count = 0
+        peak_end = None
+
+        for timestamp in timestamps:
+            while (
+                recent_events
+                and timestamp - recent_events[0] > window
+            ):
+                recent_events.popleft()
+
+            recent_events.append(timestamp)
+
+            if len(recent_events) > peak_count:
+                peak_count = len(recent_events)
+                peak_end = timestamp
+
+        if peak_count >= FAILED_LOGIN_THRESHOLD:
+            alerts.append({
+                "source_ip": ip,
+                "failed_attempts_in_window": peak_count,
+                "window_minutes": WINDOW_MINUTES,
+                "window_end": peak_end.isoformat(),
+            })
+
+    alerts.sort(
+        key=lambda item: item["failed_attempts_in_window"],
+        reverse=True,
+    )
+
+    return {
+        "total_failed_login_events": sum(failed_attempts.values()),
+        "unique_source_ips": len(failed_attempts),
+        "unparsed_failed_events": unparsed_failed_events,
+        "alerts": alerts,
+    }
 
 
 def main() -> None:
@@ -95,23 +103,15 @@ def main() -> None:
         print(f"Error: log file not found: {LOG_FILE}")
         return
 
-    failed_attempts = analyse_log(LOG_FILE)
-    total_failed = sum(failed_attempts.values())
-
-    alerts = [
-        {"source_ip": ip, "failed_attempts": count}
-        for ip, count in failed_attempts.most_common()
-        if count >= FAILED_LOGIN_THRESHOLD
-    ]
+    results = analyse_log(LOG_FILE)
 
     report = {
         "tool": "LogSentinel",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "log_file": str(LOG_FILE),
         "threshold": FAILED_LOGIN_THRESHOLD,
-        "total_failed_login_events": total_failed,
-        "unique_source_ips": len(failed_attempts),
-        "alerts": alerts,
+        "window_minutes": WINDOW_MINUTES,
+        **results,
     }
 
     REPORT_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -122,19 +122,27 @@ def main() -> None:
 
     print("LogSentinel - SSH Authentication Log Analysis")
     print("=" * 48)
-    print(f"Failed login events: {total_failed}")
-    print(f"Unique source IPs: {len(failed_attempts)}")
+    print(f"Failed login events: {results['total_failed_login_events']}")
+    print(f"Unique source IPs: {results['unique_source_ips']}")
+    print(f"Detection window: {WINDOW_MINUTES} minutes")
     print()
 
-    if alerts:
-        for alert in alerts:
+    if results["alerts"]:
+        for alert in results["alerts"]:
             print(
                 f"[ALERT] {alert['source_ip']}: "
-                f"{alert['failed_attempts']} failed login attempts "
-                f"(threshold: {FAILED_LOGIN_THRESHOLD})"
+                f"{alert['failed_attempts_in_window']} failed attempts "
+                f"within {WINDOW_MINUTES} minutes"
             )
     else:
         print("No source IP reached the alert threshold.")
+
+    if results["unparsed_failed_events"]:
+        print(
+            "Warning: "
+            f"{results['unparsed_failed_events']} failed-login events "
+            "could not be parsed."
+        )
 
     print(f"\nJSON report saved to: {REPORT_FILE}")
     print("Analysis complete.")

@@ -2,14 +2,14 @@
 
 **LogSentinel** is a Python-based Linux authentication log analyser developed as part of the 404authority cybersecurity portfolio.
 
-It scans SSH authentication logs, counts failed login attempts by source IP, flags IPs that reach a configurable threshold, and generates a JSON report.
+It parses SSH authentication logs, counts failed login attempts by source IP, detects bursts of failed logins within a rolling time window, and exports a JSON report.
 
 ## Features
 
 - Parses SSH failed-password events.
-- Counts failed login attempts by source IP address.
-- Flags IPs that meet or exceed the configured threshold.
-- Displays alerts in the terminal.
+- Groups failed login attempts by source IP.
+- Detects at least three failed attempts within a rolling 10-minute window.
+- Reports the number of failed attempts in each detected window.
 - Exports analysis results to JSON.
 - Includes automated unit tests.
 
@@ -24,8 +24,8 @@ LogSentinel/
 ├── tests/
 │   └── test_logsentinel.py
 ├── logsentinel.py
+├── .gitignore
 └── README.md
-```
 
 ## Requirements
 
@@ -34,47 +34,45 @@ LogSentinel/
 
 ## Usage
 
-Clone the repository, then enter the project directory.
+Run the analyser from the project directory:
 
-Run the analyser:
+    python3 logsentinel.py
 
-```bash
-python3 logsentinel.py
-```
-
-The tool reads `logs/auth.log`, reports failed-login counts, flags source IPs with three or more failed attempts, and writes `reports/analysis-report.json`.
+The tool reads `logs/auth.log` and generates `reports/analysis-report.json`.
 
 ## Run the Tests
 
-```bash
-python3 -m unittest discover -s tests -v
-```
+    python3 -m unittest discover -s tests -v
 
-The tests cover counting failed attempts, handling multiple source IPs, and processing an empty log.
+The tests cover time-window detection, failures spread outside the detection window, successful logins, and empty logs.
 
 ## Sample Detection
 
-With the included sample data, LogSentinel identifies repeated failed login attempts from:
+The included fictional sample log produces alerts for:
 
 - `192.168.1.50`
 - `10.0.0.25`
 
-These addresses are part of fictional lab data and do not indicate real attacks.
+Each address has at least three failed login attempts within a 10-minute window.
+
+All included log entries use fictional lab data. They do not indicate real attacks.
 
 ## Limitations
 
-- The current version detects failed-password events matching a specific SSH log format.
-- It counts attempts across the entire file rather than within a time window.
-- A threshold alert indicates suspicious activity, not proof of a brute-force attack.
-- The tool does not automatically block IP addresses or change system settings.
-- Only synthetic sample logs are included for demonstration.
+- The parser targets a specific SSH syslog format.
+- Log timestamps omit the year and timezone; the current implementation assumes the current year and UTC.
+- The analyser detects bursts but does not establish that an attack occurred.
+- IP address format matching does not fully validate IP addresses.
+- The tool does not block IP addresses or change system settings.
+- Only synthetic sample logs are included.
 
 ## Future Improvements
 
-- Time-window-based detection.
-- More robust IP address validation.
+- Configurable thresholds and detection windows.
+- Better handling of year boundaries and timezone information.
 - Support for additional authentication log formats.
-- Improved error handling and summary reporting.
+- More robust IP address validation.
+- Additional error handling.
 
 ## Author
 
