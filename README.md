@@ -12,6 +12,8 @@ It parses SSH authentication logs, counts failed login attempts by source IP, de
 - Reports the number of failed attempts in each detected window.
 - Exports analysis results to JSON.
 - Includes automated unit tests.
+- Infers the most plausible year for syslog timestamps that omit the year, using the current UTC date as a reference.
+- Validates extracted IPv4 and IPv6 addresses with Python's built-in `ipaddress` module before counting failed-login events.
 
 ## Project Structure
 
@@ -60,9 +62,9 @@ All included log entries use fictional lab data. They do not indicate real attac
 ## Limitations
 
 - The parser targets a specific SSH syslog format.
-- Log timestamps omit the year and timezone; the current implementation assumes the current year and UTC.
+- Log timestamps omit the year and timezone; year inference uses the current UTC date and may be inaccurate for older logs or logs spanning long periods.
+- The analyser assumes UTC because the source timestamps do not include timezone information.
 - The analyser detects bursts but does not establish that an attack occurred.
-- IP address format matching does not fully validate IP addresses.
 - The tool does not block IP addresses or change system settings.
 - Only synthetic sample logs are included.
 

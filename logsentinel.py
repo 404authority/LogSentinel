@@ -1,6 +1,7 @@
 from collections import Counter, defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import ipaddress
 import json
 import re
 
@@ -17,19 +18,45 @@ FAILED_LOGIN_PATTERN = re.compile(
     r"(?P<ip>\d{1,3}(?:\.\d{1,3}){3})"
 )
 
+def parse_timestamp(
+    value: str,
+    reference_date: datetime,
+) -> datetime:
+    """Infer the most plausible year for a yearless SSH syslog timestamp."""
+    candidates = []
 
-def parse_timestamp(value: str, year: int) -> datetime:
-    """Parse a typical SSH syslog timestamp."""
-    return datetime.strptime(
-        f"{year} {value}", "%Y %b %d %H:%M:%S"
-    ).replace(tzinfo=timezone.utc)
+    for year in (
+        reference_date.year - 1,
+        reference_date.year,
+        reference_date.year + 1,
+    ):
+        try:
+            candidate = datetime.strptime(
+                f"{year} {value}", "%Y %b %d %H:%M:%S"
+            ).replace(tzinfo=timezone.utc)
+            candidates.append(candidate)
+        except ValueError:
+            continue
 
+    if not candidates:
+        raise ValueError(f"Invalid syslog timestamp: {value}")
+
+    reference = reference_date
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+    else:
+        reference = reference.astimezone(timezone.utc)
+
+    return min(
+        candidates,
+        key=lambda candidate: abs((candidate - reference).total_seconds()),
+    )
 
 def analyse_log(log_file: Path) -> dict:
     """Analyse failed SSH logins and detect bursts within a time window."""
     failed_attempts = Counter()
     events_by_ip = defaultdict(list)
-    current_year = datetime.now(timezone.utc).year
+    reference_date = datetime.now(timezone.utc)
     unparsed_failed_events = 0
 
     with log_file.open("r", encoding="utf-8") as file:
@@ -38,15 +65,18 @@ def analyse_log(log_file: Path) -> dict:
                 continue
 
             match = FAILED_LOGIN_PATTERN.search(line)
-            if not match:
-                unparsed_failed_events += 1
-                continue
 
             ip = match.group("ip")
 
             try:
+                ip = str(ipaddress.ip_address(ip))
+            except ValueError:
+                unparsed_failed_events += 1
+                continue
+
+            try:
                 timestamp = parse_timestamp(
-                    match.group("timestamp"), current_year
+                    match.group("timestamp"), reference_date
                 )
             except ValueError:
                 unparsed_failed_events += 1
