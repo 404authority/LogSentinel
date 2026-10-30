@@ -2,18 +2,20 @@
 
 **LogSentinel** is a Python-based Linux authentication log analyser developed as part of the 404authority cybersecurity portfolio.
 
-It parses SSH authentication logs, counts failed login attempts by source IP, detects bursts of failed logins within a rolling time window, and exports a JSON report.
+It analyses SSH authentication logs, counts failed password attempts by source IP, detects bursts within a rolling time window, and exports a JSON report.
 
 ## Features
 
-- Parses SSH failed-password events.
-- Groups failed login attempts by source IP.
-- Detects at least three failed attempts within a rolling 10-minute window.
-- Reports the number of failed attempts in each detected window.
-- Exports analysis results to JSON.
+- Parses SSH failed-password events from syslog-style authentication logs.
+- Groups valid failed-login events by source IP.
+- Supports IPv4 and IPv6 address validation.
+- Detects repeated failures using a rolling time window.
+- Configurable alert threshold and detection window.
+- Infers the most plausible year for syslog timestamps that omit the year.
+- Reports malformed or invalid failed-login events separately.
+- Exports results to JSON.
+- Uses only the Python standard library.
 - Includes automated unit tests.
-- Infers the most plausible year for syslog timestamps that omit the year, using the current UTC date as a reference.
-- Validates extracted IPv4 and IPv6 addresses with Python's built-in `ipaddress` module before counting failed-login events.
 
 ## Project Structure
 
@@ -28,53 +30,77 @@ LogSentinel/
 ├── logsentinel.py
 ├── .gitignore
 └── README.md
+```
 
 ## Requirements
 
 - Python 3.10 or later
-- No third-party Python packages required
+- No third-party Python packages
 
 ## Usage
 
-Run the analyser from the project directory:
+Run from the project directory with the default settings:
 
-    python3 logsentinel.py
+```bash
+python3 logsentinel.py
+```
 
-The tool reads `logs/auth.log` and generates `reports/analysis-report.json`.
+The default input is `logs/auth.log`; the default JSON report is `reports/analysis-report.json`.
+
+### Command-line options
+
+```text
+-i, --input       Input authentication log
+-o, --output      JSON report destination
+-t, --threshold   Failed attempts required for an alert (default: 3)
+-w, --window      Rolling window in minutes (default: 10)
+```
+
+Example using a different log and detection settings:
+
+```bash
+python3 logsentinel.py --input logs/auth.log --output reports/custom-report.json --threshold 5 --window 15
+```
+
+View all options:
+
+```bash
+python3 logsentinel.py --help
+```
 
 ## Run the Tests
 
-    python3 -m unittest discover -s tests -v
+```bash
+python3 -m unittest discover -s tests -v
+```
 
-The tests cover time-window detection, failures spread outside the detection window, successful logins, and empty logs.
+The tests cover timestamp year inference, IPv4 and IPv6 validation, rolling-window boundaries, per-IP detection, malformed events, configurable thresholds, and empty logs.
 
 ## Sample Detection
 
-The included fictional sample log produces alerts for:
+The included fictional sample log contains failed login bursts from:
 
 - `192.168.1.50`
 - `10.0.0.25`
 
-Each address has at least three failed login attempts within a 10-minute window.
+Both addresses reach the default threshold of three failed attempts within ten minutes.
 
 All included log entries use fictional lab data. They do not indicate real attacks.
 
+## Detection Logic
+
+For each source IP, LogSentinel sorts the parsed event timestamps and maintains a rolling queue. Events older than the configured window are removed. The largest number of events present in any window is compared with the alert threshold.
+
+The window boundary is inclusive: an event exactly ten minutes before the current event remains in a ten-minute window.
+
 ## Limitations
 
-- The parser targets a specific SSH syslog format.
-- Log timestamps omit the year and timezone; year inference uses the current UTC date and may be inaccurate for older logs or logs spanning long periods.
-- The analyser assumes UTC because the source timestamps do not include timezone information.
-- The analyser detects bursts but does not establish that an attack occurred.
-- The tool does not block IP addresses or change system settings.
-- Only synthetic sample logs are included.
-
-## Future Improvements
-
-- Configurable thresholds and detection windows.
-- Better handling of year boundaries and timezone information.
-- Support for additional authentication log formats.
-- More robust IP address validation.
-- Additional error handling.
+- The parser targets SSH `Failed password` messages in a syslog-style format; it is not a general-purpose parser for every Linux authentication log.
+- Standard syslog timestamps omit the year and timezone. The tool infers the closest year relative to the current UTC date and assumes timestamps are UTC.
+- Year inference may be inaccurate for old logs, logs spanning multiple years, or logs whose local timezone differs from UTC.
+- The tool identifies repeated failed logins; it does not prove that an attack occurred.
+- The tool does not block IP addresses or modify system settings.
+- The included sample data is synthetic.
 
 ## Author
 
